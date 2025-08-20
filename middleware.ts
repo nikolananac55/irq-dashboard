@@ -1,40 +1,3 @@
-// middleware.ts
-import { NextResponse, NextRequest } from "next/server";
-
-function parseClientIp(req: NextRequest): string | null {
-  // Vercel/Proxies usually set X-Forwarded-For: "client, proxy1, proxy2"
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  const xri = req.headers.get("x-real-ip");
-  if (xri) return xri.trim();
-
-  // Last resort (often not useful behind proxies)
-  // @ts-ignore (next/server types don't expose socket)
-  return (req as any)?.ip || null;
-}
-
-function isPublicPath(pathname: string): boolean {
-  // Allow public assets and Next internals
-  if (
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/static") ||
-    pathname.startsWith("/public") ||
-    pathname.startsWith("/favicon") ||
-    pathname.startsWith("/robots.txt") ||
-    pathname.startsWith("/sitemap.xml")
-  ) {
-    return true;
-  }
-
-  // Allow unauthenticated access to login endpoints
-  if (pathname === "/login" || pathname === "/api/login") return true;
-
-  return false;
-}
-
 import { NextResponse, NextRequest } from "next/server";
 
 // Protect everything except static assets, /login and /api
@@ -90,3 +53,4 @@ export function middleware(req: NextRequest) {
   url.search = `?next=${encodeURIComponent(pathname + (search || ""))}`;
   return NextResponse.redirect(url, { status: 307 });
 }
+
