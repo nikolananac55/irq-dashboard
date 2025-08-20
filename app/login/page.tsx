@@ -1,67 +1,107 @@
-// app/login/page.tsx
 "use client";
 
-import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import React, { Suspense, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 
-export default function LoginPage() {
-  const sp = useSearchParams();
-  const next = sp.get("next") || "/";
-  const err = sp.get("err") === "1";
+// Make sure this page is not statically generated
+export const dynamic = "force-dynamic";
 
-  const [username, setUsername] = useState("admin");
+function LoginInner() {
+  const searchParams = useSearchParams();
+  const next = searchParams.get("next") || "/";
+  const router = useRouter();
+
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (res.ok) {
+        // API should set the cookie `irq_auth=1`; then we navigate
+        router.push(next);
+      } else {
+        const t = await res.text();
+        setErr(t || "Login failed");
+      }
+    } catch (e: any) {
+      setErr(e?.message || "Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ background: "#f7f8fa" }}>
+    <div className="min-h-screen flex items-center justify-center bg-white p-6">
       <form
-        method="POST"
-        action="/api/auth"
-        className="w-full max-w-sm rounded-2xl p-6 shadow-sm"
-        style={{ background: "#fff", border: "1px solid #e5e7eb" }}
+        onSubmit={onSubmit}
+        className="w-full max-w-sm rounded-2xl border p-5 shadow-sm"
+        style={{ borderColor: "#e5e7eb" }}
       >
-        <h1 className="text-xl font-semibold mb-4">Sign in</h1>
+        <h1 className="text-lg font-semibold mb-4">Sign in</h1>
 
-        {err && (
-          <div className="mb-3 text-sm rounded-lg px-3 py-2"
-               style={{ color: "#dc2626", background: "rgba(220,38,38,0.08)", border: "1px solid #fecaca" }}>
-            Invalid username or password.
-          </div>
-        )}
-
-        <input type="hidden" name="next" value={next} />
-
-        <label className="block text-sm mb-1 text-gray-600">Username</label>
+        <label className="block text-sm mb-1">Username</label>
         <input
-          name="username"
+          className="w-full rounded-lg border px-3 py-2 mb-3"
+          style={{ borderColor: "#e5e7eb", background: "#f7f8fa" }}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          className="w-full mb-3 rounded-lg px-3 py-2 text-sm border"
-          placeholder="admin"
+          autoComplete="username"
+          required
         />
 
-        <label className="block text-sm mb-1 text-gray-600">Password</label>
+        <label className="block text-sm mb-1">Password</label>
         <input
-          name="password"
           type="password"
+          className="w-full rounded-lg border px-3 py-2 mb-4"
+          style={{ borderColor: "#e5e7eb", background: "#f7f8fa" }}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full mb-4 rounded-lg px-3 py-2 text-sm border"
-          placeholder="••••••••"
+          autoComplete="current-password"
+          required
         />
+
+        {err ? (
+          <div className="text-sm mb-3" style={{ color: "#dc2626" }}>
+            {err}
+          </div>
+        ) : null}
 
         <button
           type="submit"
-          className="w-full rounded-lg px-3 py-2 text-sm font-semibold"
-          style={{ background: "#0f172a", color: "#fff" }}
+          disabled={busy}
+          className="w-full rounded-lg px-3 py-2 text-white font-medium"
+          style={{
+            background: busy ? "#94a3b8" : "#0f172a",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
         >
-          Sign in
+          {busy ? "Signing in…" : "Sign in"}
         </button>
 
-        <p className="mt-3 text-xs text-gray-500">
-          Access is restricted. If you should have access and can’t sign in, contact the owner.
-        </p>
+        <div className="text-xs mt-3 opacity-60">
+          You’ll stay signed in on this device.
+        </div>
       </form>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  // FIX: wrap the component that uses useSearchParams in Suspense
+  return (
+    <Suspense fallback={<div className="p-6">Loading…</div>}>
+      <LoginInner />
+    </Suspense>
   );
 }
