@@ -1,132 +1,78 @@
 // middleware.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 
-// Paths that never need auth (login page, auth API, static)
-const PUBLIC_PATHS = [
-  "/login",
-  "/api/auth",
-  "/favicon.ico",
-  "/robots.txt",
-  "/sitemap.xml",
-];
-
-const PUBLIC_PREFIXES = [
-  "/_next/",        // Next.js assets
-  "/static/",       // your static if any
-  "/public/",       // just in case
-  "/api/health",    // if you add a health endpoint later
-];
-
-const COOKIE_NAME = "irq_auth";
-
-// Comma-separated list of allowed IPs, e.g. "1.2.3.4,5.6.7.8"
-function getTrustedIPs(): string[] {
-  const raw = process.env.TRUSTED_IPS || "";
-  return raw.split(",").map(s => s.trim()).filter(Boolean);
-}
-
-function getClientIP(req: NextRequest): string | null {
-  // Vercel/Cloud providers set x-forwarded-for
+function parseClientIp(req: NextRequest): string | null {
+  // Vercel/Proxies usually set X-Forwarded-For: "client, proxy1, proxy2"
   const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]?.trim() || null;
-  // NextRequest.ip is often populated locally
-  // @ts-ignore
-  if (req.ip) return (req.ip as string) || null;
-  return null;
+  if (xff) {
+    const first = xff.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  const xri = req.headers.get("x-real-ip");
+  if (xri) return xri.trim();
+
+  // Last resort (often not useful behind proxies)
+  // @ts-ignore (next/server types don't expose socket)
+  return (req as any)?.ip || null;
 }
 
-function pathIsPublic(pathname: string): boolean {
-  if (PUBLIC_PATHS.includes(pathname)) return true;
-  return PUBLIC_PREFIXES.some(p => pathname.startsWith(p));
+function isPublicPath(pathname: string): boolean {
+  // Allow public assets and Next internals
+  if (
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/static") ||
+    pathname.startsWith("/public") ||
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/robots.txt") ||
+    pathname.startsWith("/sitemap.xml")
+  ) {
+    return true;
+  }
+
+  // Allow unauthenticated access to login endpoints
+  if (pathname === "/login" || pathname === "/api/login") return true;
+
+  return false;
 }
 
-export async function middleware(req: NextRequest) {
+export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (pathIsPublic(pathname)) {
+  // Public paths pass through
+  if (isPublicPath(pathname)) {
     return NextResponse.next();
   }
 
-  // 1) Allow if coming from a trusted IP (auto-login by IP)
-  const clientIP = getClientIP(req);
-  const trusted = getTrustedIPs();
-  if (clientIP && trusted.includes(clientIP)) {
+  // 1) IP allowlist from env: ALLOWED_IPS="174.94.76.46,76.69.249.185"
+  const allowedIps = (process.env.ALLOWED_IPS || "")
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
+
+  const clientIp = parseClientIp(req);
+  if (clientIp && allowedIps.includes(clientIp)) {
+    // Bypass auth if client IP is allowlisted
     return NextResponse.next();
   }
 
-  // 2) Allow if valid auth cookie present
-  const token = req.cookies.get(COOKIE_NAME)?.value || "";
-  if (token) {
-    const ok = await verifyToken(token);
-    if (ok) return NextResponse.next();
+  // 2) Cookie-based auth (set by your login route/page)
+  const authCookie = req.cookies.get("irq_auth")?.value;
+  if (authCookie === "1") {
+    return NextResponse.next();
   }
 
-  // 3) Otherwise → redirect to /login
+  // Not allowed → redirect to /login (preserve intended target as ?next=)
   const url = req.nextUrl.clone();
   url.pathname = "/login";
-  url.searchParams.set("next", req.nextUrl.pathname);
+  url.searchParams.set("next", pathname || "/");
   return NextResponse.redirect(url);
 }
 
-// ---------- Token helpers (Edge-safe) ----------
-type Payload = { u: string; exp: number }; // username + expiry (epoch seconds)
-
-function b64u(input: ArrayBuffer | string) {
-  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
-  let s = Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return s;
-}
-
-async function getKey() {
-  const secret = process.env.AUTH_SECRET || "dev-secret-change-me";
-  return await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"]
-  );
-}
-
-async function sign(payload: string) {
-  const key = await getKey();
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-  return b64u(sig);
-}
-
-async function verify(payload: string, signature: string) {
-  const key = await getKey();
-  const ok = await crypto.subtle.verify(
-    "HMAC",
-    key,
-    Buffer.from(signature.replace(/-/g, "+").replace(/_/g, "/"), "base64"),
-    new TextEncoder().encode(payload)
-  );
-  return ok;
-}
-
-export async function createToken(username: string, days = 30) {
-  const exp = Math.floor(Date.now() / 1000) + days * 24 * 3600;
-  const body: Payload = { u: username, exp };
-  const payload = b64u(JSON.stringify(body));
-  const sig = await sign(payload);
-  return `${payload}.${sig}`;
-}
-
-export async function verifyToken(token: string) {
-  const [payload, sig] = token.split(".");
-  if (!payload || !sig) return false;
-  try {
-    const ok = await verify(payload, sig);
-    if (!ok) return false;
-    const json = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString()) as Payload;
-    if (!json?.exp || json.exp < Math.floor(Date.now() / 1000)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
+// Apply middleware to everything except:
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    // Run on all paths except the ones that *must* remain public.
+    // We still guard inside isPublicPath(), but excluding here avoids extra work.
+    "/((?!_next|static|public|favicon.ico|robots.txt|sitemap.xml).*)",
+  ],
 };
