@@ -1,33 +1,50 @@
 // app/api/sheet/route.ts
 
-export const runtime = "edge"; // fast + works great on Vercel
+export const runtime = "edge"; // fast on Vercel
+
+function textResponse(body: string, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+    },
+  });
+}
 
 export async function GET() {
   const url = process.env.SHEET_CSV_URL;
 
   if (!url) {
-    return new Response("Missing SHEET_CSV_URL environment variable", { status: 500 });
+    return textResponse("ERROR: Missing SHEET_CSV_URL env var in Vercel → Settings → Environment Variables.", 500);
   }
 
   try {
-    // No caching; always fetch fresh CSV
-    const upstream = await fetch(url, { cache: "no-store" });
+    // Try fetch from Edge
+    const res = await fetch(url, { cache: "no-store" });
 
-    if (!upstream.ok) {
-      return new Response(`Upstream fetch failed (${upstream.status})`, { status: 502 });
+    if (!res.ok) {
+      return textResponse(`ERROR: Upstream fetch failed (${res.status}) for ${url}`, 502);
     }
 
-    const text = await upstream.text();
+    // Basic content check
+    const contentType = res.headers.get("content-type") || "";
+    const body = await res.text();
+    if (!body.trim()) {
+      return textResponse(`ERROR: Upstream returned empty body for ${url}`, 502);
+    }
 
-    // Return as CSV to the client
-    return new Response(text, {
+    // Return as CSV. Your client already parses CSV.
+    return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Cache-Control": "no-store, max-age=0",
+        // expose type for debugging:
+        "X-Upstream-Content-Type": contentType,
       },
     });
   } catch (err: any) {
-    return new Response(`Fetch error: ${err?.message || String(err)}`, { status: 500 });
+    return textResponse(`ERROR: Fetch threw: ${err?.message || String(err)}`, 500);
   }
 }
